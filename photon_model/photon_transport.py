@@ -11,26 +11,32 @@ import h5py
 def create_photon_source(bins_file, mesh):
     photon_bins = []
     photon_sources = []
-
     centroid_x = []
+
+    n_mesh_elems = 384
+    n_photon_bins = 24
 
     with open("./centroids.csv", 'r', newline='') as f:
         reader = csv.reader(f)
         for row in reader:
             for i, bin in enumerate(row):
                 centroid_x.append(float(bin))
+    print(len(centroid_x))
 
-    print(centroid_x)
     with open(bins_file, 'r', newline='') as f:
         reader = csv.reader(f)
         for row in reader:
             for i, bin in enumerate(row):
-                photon_bins.append(float(bin))
+                if (i == 0):
+                    photon_bins.append(float(bin))
+                else:
+                    photon_bins.append(float(bin) * 1e6)
+    print(photon_bins)
 
-    for i in range(0, 127):
+    for i in range(0, n_mesh_elems):
 
         photon_spectra = []
-        for j in range(0, 24):
+        for j in range(0, n_photon_bins):
             # photon_spectra.append(centroid_x[i])
             photon_spectra.append(1)
 
@@ -40,7 +46,7 @@ def create_photon_source(bins_file, mesh):
         source.energy = photon_dist
         source.particle = 'photon'
         # source.strength = 1
-        source.strength = 24 * centroid_x[i]
+        source.strength = n_photon_bins * centroid_x[i]
         photon_sources.append(source)
 
     mesh_source = openmc.MeshSource(mesh, photon_sources)
@@ -93,7 +99,7 @@ def make_model(temperature=296):
 
     surf = openmc.Sphere(r=250, surface_id=99999, boundary_type="vacuum")
     dag = openmc.DAGMCUniverse(
-        "/home/bill/Projects/PyFIS/cube_example/mesh/cube_dag.h5m", name='daguni', universe_id=42)
+        "/home/bill/Projects/PyFIS/cube_example/mesh/cube_hex_dag.h5m", name='daguni', universe_id=42)
     cell = openmc.Cell(fill=dag, region=-surf, cell_id=99999)
 
     model.geometry = openmc.Geometry([cell])
@@ -101,7 +107,7 @@ def make_model(temperature=296):
     # tallies
     # Create a mesh that will be used for tallying
     mesh = openmc.UnstructuredMesh(
-        filename='/home/bill/Projects/PyFIS/cube_example/mesh/cube.e', library='libmesh', mesh_id=1)
+        filename='/home/bill/Projects/PyFIS/cube_example/mesh/cube_hex.e', library='libmesh', mesh_id=1)
 
     # Create a mesh filter that can be used in a tally
     mesh_filter = openmc.MeshFilter(mesh)
@@ -130,10 +136,13 @@ def make_model(temperature=296):
     # settings
     # Indicate how many particles to run
 
-    model.settings.batches = 20
+    model.settings.batches = 2
     model.settings.inactive = 0
+    model.settings.output = {"summary": False,
+                             "tallies": True}
     # 1e10 histories per batch
-    model.settings.particles = 50000
+    model.settings.particles = 5000000
+    model.settings.max_tracks = 1000
     model.settings.photon_transport = True
     model.settings.electron_treatment = 'ttb'
     model.settings.run_mode = 'fixed source'
@@ -151,14 +160,17 @@ def make_model(temperature=296):
 model = make_model()
 model.export_to_xml("./photon_model.xml")
 num_mpi_tasks = sys.argv[1]
-sp_path = model.run(mpi_args=['mpiexec', '-n', str(num_mpi_tasks)])
+sp_path = model.run(
+    mpi_args=['mpiexec', '-n', str(num_mpi_tasks)], tracks=False)
 
 sp = openmc.StatePoint(
     sp_path)
 
 flux_tally = sp.get_tally(name='photon_flux')
+print("flux stdev: ", flux_tally.std_dev.mean())
 flux_born_tally = sp.get_tally(name='photon_flux_born')
 absorption_tally = sp.get_tally(name='photon_absorption')
+print("Absorption stdev: ", absorption_tally.std_dev.mean())
 
 flux = flux_tally.get_values(scores=['flux'], filters=[
     openmc.ParticleFilter], filter_bins=[('photon',)])
@@ -178,6 +190,6 @@ data_dict = {'photon_flux': flux,
              'photon_absorption': absorption,
              'photon_flux_born': flux_born}
 
-out_name = "./photons_" + str(num_mpi_tasks) + ".vtk"
-
+out_name = f"./photons_{str(num_mpi_tasks)}_{model.settings.particles}.vtk"
+print(out_name)
 mesh.write_data_to_vtk(out_name, data_dict)

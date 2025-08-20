@@ -12,11 +12,6 @@ def make_model(compiled_source, mesh_id, temperature=296):
 
     model = openmc.Model()
     model.settings.dagmc = True
-    # lead at room temperature # molten lead should be 10.66
-    multiplier = openmc.Material(name="multiplier", temperature=temperature)
-    multiplier.add_element("Pb", 1, "ao")
-    multiplier.set_density("g/cm3", 11.35)
-
     # steel
     steel = openmc.Material(name="steel", temperature=temperature)
     steel.add_nuclide("C13", 1.51325480e-05, "ao")
@@ -55,14 +50,14 @@ def make_model(compiled_source, mesh_id, temperature=296):
 
     surf = openmc.Sphere(r=250, surface_id=99999, boundary_type="vacuum")
     dag = openmc.DAGMCUniverse(
-        "/home/bill/Projects/PyFIS/cube_example/mesh/cube_dag.h5m", name='daguni', universe_id=42)
+        "/home/bill/Projects/PyFIS/cube_example/mesh/cube_hex_dag.h5m", name='daguni', universe_id=42)
     cell = openmc.Cell(fill=dag, region=-surf, cell_id=99999)
 
     # model.geometry.root_
     model.geometry = openmc.Geometry([cell])
 
     mesh = openmc.UnstructuredMesh(
-        filename='/home/bill/Projects/PyFIS/cube_example/mesh/cube.e', library='libmesh', mesh_id=1)
+        filename='/home/bill/Projects/PyFIS/cube_example/mesh/cube_hex.e', library='libmesh', mesh_id=1)
 
     mesh_filter = openmc.MeshFilter(mesh)
     mesh_born_filter = openmc.MeshBornFilter(mesh)
@@ -83,17 +78,27 @@ def make_model(compiled_source, mesh_id, temperature=296):
     photon_absorption_tally.scores = ['absorption']
     photon_absorption_tally.estimator = 'collision'
 
+    # sourcepoint = {
+    #     "batches": [20],
+    #     "overwrite": True,
+    #     "write": True
+    # }
+
     model.tallies = [photon_flux_tally,
                      photon_absorption_tally, photon_flux_born_tally]
 
-    model.settings.batches = 20
+    model.settings.batches = 2
     model.settings.inactive = 0
+    model.settings.output = {"summary": False,
+                             "tallies": False}
     # 1e10 histories per batch
-    model.settings.particles = 50000
+    model.settings.particles = 100
     model.settings.photon_transport = True
     model.settings.electron_treatment = 'ttb'
     model.settings.run_mode = 'fixed source'
     model.settings.energy_mode = 'continuous-energy'
+    # model.settings.sourcepoint = sourcepoint
+    model.settings.max_tracks = 10000
 
     model.settings.source = openmc.CompiledSource(
         compiled_source, mesh_id)
@@ -107,16 +112,20 @@ model = make_model(
 
 model.export_to_xml("./photon_model_compiled.xml")
 
+
 num_mpi_tasks = sys.argv[1]
 
-sp_path = model.run(mpi_args=['mpiexec', '-n', str(num_mpi_tasks)])
+sp_path = model.run(
+    mpi_args=['mpiexec', '-n', str(num_mpi_tasks)], tracks=True)
 
 sp = openmc.StatePoint(
     sp_path)
 
 flux_tally = sp.get_tally(name='photon_flux')
+print("flux stdev: ", flux_tally.std_dev.mean())
 flux_born_tally = sp.get_tally(name='photon_flux_born')
 absorption_tally = sp.get_tally(name='photon_absorption')
+print("Absorption stdev: ", absorption_tally.std_dev.mean())
 
 flux = flux_tally.get_values(scores=['flux'], filters=[
     openmc.ParticleFilter], filter_bins=[('photon',)])
@@ -136,7 +145,13 @@ print(mesh.dimension)
 data_dict = {'photon_flux': flux,
              'photon_absorption': absorption,
              'photon_flux_born': flux_born}
+print(sp.source)
 
-out_name = "./photons_compiled_" + str(num_mpi_tasks) + ".vtk"
+out_name = f"./photons_compiled_{str(num_mpi_tasks)
+                                 }_{model.settings.particles}.vtk"
+# track_files = [f"tracks_p{rank}.h5" for rank in range(int(num_mpi_tasks))]
+# openmc.Tracks.combine(track_files, "tracks.h5")
 
 mesh.write_data_to_vtk(out_name, data_dict)
+
+sp.close()
